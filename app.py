@@ -94,7 +94,6 @@ def get_client():
     return genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
 
-@st.cache_resource
 def _supabase():
     url = os.getenv("SUPABASE_URL", "")
     key = os.getenv("SUPABASE_KEY", "")
@@ -128,13 +127,17 @@ def init_db():
 def save_to_db(filename: str, original_text: str, corrected_text: str, corrections: list):
     sb = _supabase()
     if sb:
-        sb.table("journals").insert({
-            "filename": filename,
-            "original_text": original_text,
-            "corrected_text": corrected_text,
-            "corrections": json.dumps(corrections, ensure_ascii=False),
-        }).execute()
-        return
+        try:
+            sb.table("journals").insert({
+                "filename": filename,
+                "original_text": original_text,
+                "corrected_text": corrected_text,
+                "corrections": json.dumps(corrections, ensure_ascii=False),
+            }).execute()
+            return
+        except Exception as e:
+            st.error(f"Supabase保存エラー: {type(e).__name__}: {e}")
+            raise
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "INSERT INTO journals (filename, original_text, corrected_text, corrections) VALUES (?,?,?,?)",
@@ -641,16 +644,16 @@ def main():
         initial_sidebar_state="collapsed"
     )
 
-    st.title("英語ジャーナル添削AI")
-    st.caption("手書き英語ジャーナルのPDFをアップロードすると、文字起こし・文法添削・エラー分析を自動で行います")
-
-    # Streamlit Community Cloud のシークレットを os.environ にブリッジ
+    # Streamlit Community Cloud のシークレットを os.environ にブリッジ（DB接続より前に実行）
     try:
         for _k, _v in st.secrets.items():
             if _k not in os.environ:
                 os.environ[_k] = str(_v)
     except Exception:
         pass
+
+    st.title("英語ジャーナル添削AI")
+    st.caption("手書き英語ジャーナルのPDFをアップロードすると、文字起こし・文法添削・エラー分析を自動で行います")
 
     public_url = get_public_url()
     local_ip = get_local_ip()
