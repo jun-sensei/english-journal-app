@@ -94,34 +94,26 @@ def get_client():
     return genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
 
-def _db():
-    """(connection, is_postgres) を返す。DATABASE_URL があれば PostgreSQL、なければ SQLite。"""
-    url = os.getenv("DATABASE_URL", "")
-    if url:
-        import psycopg2
-        import psycopg2.extras
-        return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor), True
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn, False
-
-
-def _exec(conn, is_pg: bool, query: str, params: tuple = ()):
-    """SQLite / psycopg2 両対応の execute。カーソルを返す。"""
-    if is_pg:
-        cur = conn.cursor()
-        cur.execute(query.replace("?", "%s"), params)
-        return cur
-    return conn.execute(query, params)
+@st.cache_resource
+def _supabase():
+    url = os.getenv("SUPABASE_URL", "")
+    key = os.getenv("SUPABASE_KEY", "")
+    if url and key:
+        from supabase import create_client
+        return create_client(url, key)
+    return None
 
 
 @st.cache_resource
 def init_db():
-    conn, is_pg = _db()
-    pk = "BIGSERIAL PRIMARY KEY" if is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    _exec(conn, is_pg, f"""
+    sb = _supabase()
+    if sb:
+        return  # テーブルはSupabaseダッシュボードで事前作成済み
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS journals (
-            id {pk},
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             filename TEXT,
             original_text TEXT,
@@ -134,8 +126,17 @@ def init_db():
 
 
 def save_to_db(filename: str, original_text: str, corrected_text: str, corrections: list):
-    conn, is_pg = _db()
-    _exec(conn, is_pg,
+    sb = _supabase()
+    if sb:
+        sb.table("journals").insert({
+            "filename": filename,
+            "original_text": original_text,
+            "corrected_text": corrected_text,
+            "corrections": json.dumps(corrections, ensure_ascii=False),
+        }).execute()
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
         "INSERT INTO journals (filename, original_text, corrected_text, corrections) VALUES (?,?,?,?)",
         (filename, original_text, corrected_text, json.dumps(corrections, ensure_ascii=False))
     )
@@ -144,8 +145,15 @@ def save_to_db(filename: str, original_text: str, corrected_text: str, correctio
 
 
 def load_all_entries():
-    conn, is_pg = _db()
-    rows = _exec(conn, is_pg,
+    sb = _supabase()
+    if sb:
+        res = sb.table("journals").select(
+            "id,created_at,filename,original_text,corrected_text,corrections"
+        ).order("created_at", desc=True).execute()
+        return res.data
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
         "SELECT id, created_at, filename, original_text, corrected_text, corrections "
         "FROM journals ORDER BY created_at DESC"
     ).fetchall()
@@ -154,11 +162,17 @@ def load_all_entries():
 
 
 def load_corrections_with_meta() -> list[dict]:
-    conn, is_pg = _db()
-    rows = _exec(conn, is_pg,
-        "SELECT id, created_at, corrections FROM journals ORDER BY created_at ASC"
-    ).fetchall()
-    conn.close()
+    sb = _supabase()
+    if sb:
+        res = sb.table("journals").select("id,created_at,corrections").order("created_at").execute()
+        rows = res.data
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, created_at, corrections FROM journals ORDER BY created_at ASC"
+        ).fetchall()
+        conn.close()
     result = []
     for row in rows:
         try:
