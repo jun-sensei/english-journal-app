@@ -19,41 +19,59 @@ MODEL = "gemini-2.5-flash"
 MAX_PDF_MB = 10
 
 CATEGORY_JA = {
+    # 新7分類
+    "Tense/Aspect": "時制・アスペクト",
+    "Subject-Verb Agreement": "主語・動詞の一致",
+    "Word Form": "語形",
+    "Article/Preposition": "冠詞・前置詞",
+    "Vocabulary/Collocation": "語彙・コロケーション",
+    "Sentence Structure": "文の構造",
+    "Other": "その他",
+    # 旧分類（後方互換）
     "Grammar": "文法",
     "Vocabulary": "語彙",
-    "Article/Preposition": "冠詞・前置詞",
     "Tense": "時制",
-    "Other": "その他",
 }
 
-# 英語習得への影響度スコア（english-exam-evaluator準拠）
-# Grammar/Tense: 意味の伝達に直結 → 最重大
-# Article/Preposition: 日本語母語話者の最頻出ミス → 重大
-# Vocabulary: 文脈から推測可能なことも多い → 中程度
-# Other: 句読点・大文字化など → 軽微
 SEVERITY_WEIGHTS = {
-    "Grammar": 5,
-    "Tense": 4,
-    "Article/Preposition": 4,
-    "Vocabulary": 3,
+    "Tense/Aspect": 5,
+    "Subject-Verb Agreement": 5,
+    "Article/Preposition": 5,
+    "Word Form": 4,
+    "Sentence Structure": 4,
+    "Vocabulary/Collocation": 3,
     "Other": 2,
+    # 旧分類（後方互換）
+    "Grammar": 5,
+    "Vocabulary": 3,
+    "Tense": 4,
 }
 
 RATING_COLOR = {"S": "#dc2626", "A": "#f97316", "B": "#eab308", "C": "#22c55e"}
 RATING_LABEL = {"S": "S（最重要）", "A": "A（重要）", "B": "B（要改善）", "C": "C（軽微）"}
 
 CATEGORY_BG = {
+    "Subject-Verb Agreement": "#fecaca",
     "Grammar": "#fecaca",
+    "Tense/Aspect": "#fed7aa",
     "Tense": "#fed7aa",
+    "Word Form": "#f5d0fe",
     "Article/Preposition": "#fef08a",
+    "Vocabulary/Collocation": "#bfdbfe",
     "Vocabulary": "#bfdbfe",
+    "Sentence Structure": "#d9f99d",
     "Other": "#e5e7eb",
 }
 CATEGORY_TC = {
+    "Subject-Verb Agreement": "#991b1b",
     "Grammar": "#991b1b",
+    "Tense/Aspect": "#9a3412",
     "Tense": "#9a3412",
+    "Word Form": "#7e22ce",
     "Article/Preposition": "#92400e",
+    "Vocabulary/Collocation": "#1e40af",
     "Vocabulary": "#1e40af",
+    "Sentence Structure": "#3f6212",
     "Other": "#374151",
 }
 
@@ -63,12 +81,19 @@ Role 1 - Transcriber: Read the handwritten text from the PDF carefully. Use cont
 
 Role 2 - Proofreader: Correct all grammar, vocabulary, and expression errors. Rewrite into natural, journal-appropriate English that a native speaker would write.
 
-Role 3 - Tutor: Identify every individual correction made and classify each into exactly one of these categories:
-- "Grammar" (subject-verb agreement, sentence structure, etc.)
-- "Vocabulary" (wrong word choice, spelling)
-- "Article/Preposition" (a/an/the, in/on/at, etc.)
-- "Tense" (past/present/future errors)
-- "Other" (punctuation, capitalization, etc.)
+Role 3 - Tutor: For each correction made, provide:
+1. The category (choose exactly one):
+   - "Tense/Aspect" (wrong tense, incorrect perfect or progressive form)
+   - "Subject-Verb Agreement" (third-person singular -s missing, be-verb mismatch, etc.)
+   - "Word Form" (wrong part of speech, incorrect verb conjugation such as irregular past tense)
+   - "Article/Preposition" (a/an/the errors, wrong or missing prepositions)
+   - "Vocabulary/Collocation" (wrong word choice, unnatural word combinations like "make homework")
+   - "Sentence Structure" (word order, incomplete sentences, run-on sentences)
+   - "Other" (punctuation, capitalization, spelling)
+2. A reason in Japanese explaining the grammatical rule violated, understandable to a Japanese middle or high school student.
+3. A one-sentence learning tip in Japanese to help avoid this mistake next time.
+
+Also identify up to 3 phrases the student used correctly and effectively (good grammar, natural expression, or strong vocabulary choice) and note why they are good.
 
 Return ONLY a valid JSON object with no markdown fences or extra text:
 {
@@ -78,8 +103,15 @@ Return ONLY a valid JSON object with no markdown fences or extra text:
     {
       "original": "<original phrase containing the error>",
       "corrected": "<corrected phrase>",
-      "reason": "<brief explanation in Japanese>",
-      "category": "<Grammar|Vocabulary|Article/Preposition|Tense|Other>"
+      "reason": "<explanation of the grammar rule violated, in Japanese>",
+      "learning_point": "<one-sentence tip to avoid this mistake, in Japanese>",
+      "category": "<Tense/Aspect|Subject-Verb Agreement|Word Form|Article/Preposition|Vocabulary/Collocation|Sentence Structure|Other>"
+    }
+  ],
+  "strengths": [
+    {
+      "phrase": "<phrase the student used well>",
+      "comment": "<why this is good, in Japanese>"
     }
   ]
 }"""
@@ -94,6 +126,7 @@ def get_client():
     return genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
 
+@st.cache_resource
 def _supabase():
     url = os.getenv("SUPABASE_URL", "")
     key = os.getenv("SUPABASE_KEY", "")
@@ -107,21 +140,20 @@ def _supabase():
 def init_db():
     sb = _supabase()
     if sb:
-        return  # テーブルはSupabaseダッシュボードで事前作成済み
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS journals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            filename TEXT,
-            original_text TEXT,
-            corrected_text TEXT,
-            corrections TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS journals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                filename TEXT,
+                original_text TEXT,
+                corrected_text TEXT,
+                corrections TEXT
+            )
+        """)
+        conn.commit()
 
 
 def save_to_db(filename: str, original_text: str, corrected_text: str, corrections: list):
@@ -138,13 +170,12 @@ def save_to_db(filename: str, original_text: str, corrected_text: str, correctio
         except Exception as e:
             st.error(f"Supabase保存エラー: {type(e).__name__}: {e}")
             raise
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO journals (filename, original_text, corrected_text, corrections) VALUES (?,?,?,?)",
-        (filename, original_text, corrected_text, json.dumps(corrections, ensure_ascii=False))
-    )
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO journals (filename, original_text, corrected_text, corrections) VALUES (?,?,?,?)",
+            (filename, original_text, corrected_text, json.dumps(corrections, ensure_ascii=False))
+        )
+        conn.commit()
 
 
 def load_all_entries():
@@ -154,14 +185,13 @@ def load_all_entries():
             "id,created_at,filename,original_text,corrected_text,corrections"
         ).order("created_at", desc=True).execute()
         return res.data
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT id, created_at, filename, original_text, corrected_text, corrections "
-        "FROM journals ORDER BY created_at DESC"
-    ).fetchall()
-    conn.close()
-    return rows
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, created_at, filename, original_text, corrected_text, corrections "
+            "FROM journals ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def load_corrections_with_meta() -> list[dict]:
@@ -170,12 +200,12 @@ def load_corrections_with_meta() -> list[dict]:
         res = sb.table("journals").select("id,created_at,corrections").order("created_at").execute()
         rows = res.data
     else:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, created_at, corrections FROM journals ORDER BY created_at ASC"
-        ).fetchall()
-        conn.close()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            raw_rows = conn.execute(
+                "SELECT id, created_at, corrections FROM journals ORDER BY created_at ASC"
+            ).fetchall()
+        rows = [dict(row) for row in raw_rows]
     result = []
     for row in rows:
         try:
@@ -195,11 +225,9 @@ def load_corrections_with_meta() -> list[dict]:
 
 def get_local_ip() -> str:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
     except Exception:
         return ""
 
@@ -221,27 +249,22 @@ def get_public_url() -> str:
 def highlight_corrections(text: str, corrections: list, use_original: bool) -> str:
     """修正箇所をカテゴリ色でハイライトした HTML div を返す"""
     field = "original" if use_original else "corrected"
-    result = text
-    placeholders: dict[str, tuple[str, str]] = {}
-    for i, c in enumerate(corrections):
+    result = html.escape(text)
+    for c in corrections:
         phrase = c.get(field, "").strip()
-        if not phrase or phrase not in result:
+        if not phrase:
             continue
-        ph = f"ZZHL{i:04d}ZZ"
-        placeholders[ph] = (phrase, c.get("category", "Other"))
-        result = result.replace(phrase, ph, 1)
-
-    result = html.escape(result)
-
-    for ph, (phrase, category) in placeholders.items():
-        bg = CATEGORY_BG.get(category, "#e5e7eb")
-        tc = CATEGORY_TC.get(category, "#374151")
+        escaped_phrase = html.escape(phrase)
+        if escaped_phrase not in result:
+            continue
+        cat = c.get("category", "Other")
+        bg = CATEGORY_BG.get(cat, "#e5e7eb")
+        tc = CATEGORY_TC.get(cat, "#374151")
         tag = (
             f'<mark style="background:{bg};color:{tc};padding:1px 4px;'
-            f'border-radius:3px;font-weight:600;">{html.escape(phrase)}</mark>'
+            f'border-radius:3px;font-weight:600;">{escaped_phrase}</mark>'
         )
-        result = result.replace(ph, tag)
-
+        result = result.replace(escaped_phrase, tag, 1)
     return (
         '<div style="font-family:monospace;white-space:pre-wrap;font-size:0.88em;'
         'line-height:1.75;padding:12px;background:#f9fafb;border:1px solid #e5e7eb;'
@@ -254,6 +277,10 @@ def extract_json(raw: str) -> str:
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
     if match:
         return match.group(1).strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return raw[start:end + 1]
     return raw
 
 
@@ -264,6 +291,8 @@ def analyze_journal(pdf_bytes: bytes) -> dict:
         model=MODEL,
         contents=[pdf_part, PROMPT]
     )
+    if not response.text:
+        raise ValueError("AIからの応答が空でした。PDFの内容を確認してください。")
     return json.loads(extract_json(response.text))
 
 
@@ -300,6 +329,10 @@ def upload_tab():
                 result = analyze_journal(uploaded.read())
             except json.JSONDecodeError:
                 st.error("レスポンスのパースに失敗しました。もう一度お試しください。")
+                st.session_state.analyzing = False
+                return
+            except ValueError as e:
+                st.error(str(e))
                 st.session_state.analyzing = False
                 return
             except Exception as e:
@@ -353,15 +386,33 @@ def upload_tab():
         df = pd.DataFrame(corrections)
         if "category" in df.columns:
             df["category"] = df["category"].map(CATEGORY_JA).fillna(df["category"])
-        df = df.rename(columns={
+        rename_map = {
             "original": "元の表現",
             "corrected": "修正後",
             "reason": "理由",
-            "category": "カテゴリ"
-        })
-        st.dataframe(df, use_container_width=True, hide_index=True)
+            "learning_point": "学習ポイント",
+            "category": "カテゴリ",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        cols_order = [c for c in ["カテゴリ", "元の表現", "修正後", "理由", "学習ポイント"] if c in df.columns]
+        st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
     else:
         st.success("修正点はありませんでした！素晴らしい英文です。")
+
+    strengths = result.get("strengths", [])
+    if strengths:
+        st.subheader("良かった表現")
+        for s in strengths:
+            phrase = html.escape(s.get("phrase", ""))
+            comment = html.escape(s.get("comment", ""))
+            st.markdown(
+                f'<div style="margin:4px 0;padding:8px 12px;background:#dcfce7;'
+                f'border-left:3px solid #22c55e;border-radius:4px;">'
+                f'<span style="color:#166534;font-weight:600;">✓ {phrase}</span>'
+                f'<br><span style="font-size:0.85em;color:#16a34a;">{comment}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def dashboard_tab():
@@ -436,12 +487,15 @@ def dashboard_tab():
     })
     st.dataframe(history_df, use_container_width=True, hide_index=True)
 
-    # 凡例
+    legend_cats = [
+        "Subject-Verb Agreement", "Tense/Aspect", "Word Form",
+        "Article/Preposition", "Vocabulary/Collocation", "Sentence Structure", "Other"
+    ]
     legend_parts = " ".join(
         f'<span style="background:{CATEGORY_BG[cat]};color:{CATEGORY_TC[cat]};'
         f'padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600;margin-right:4px;">'
         f'{CATEGORY_JA[cat]}</span>'
-        for cat in ["Grammar", "Tense", "Article/Preposition", "Vocabulary", "Other"]
+        for cat in legend_cats
     )
     st.subheader(f"ジャーナル一覧（全{total_entries}件）")
     st.markdown(f"ハイライト凡例: {legend_parts}", unsafe_allow_html=True)
@@ -477,6 +531,11 @@ def dashboard_tab():
                     orig = html.escape(c.get("original", ""))
                     corr_text = html.escape(c.get("corrected", ""))
                     reason = html.escape(c.get("reason", ""))
+                    learning_point = html.escape(c.get("learning_point", ""))
+                    lp_html = (
+                        f'<br><span style="font-size:0.8em;color:#7c3aed;">💡 {learning_point}</span>'
+                        if learning_point else ""
+                    )
                     st.markdown(
                         f'<div style="margin:4px 0;padding:6px 10px;background:{bg}33;'
                         f'border-left:3px solid {bg};border-radius:4px;">'
@@ -485,11 +544,12 @@ def dashboard_tab():
                         f'<span style="color:#dc2626;text-decoration:line-through;">{orig}</span>'
                         f' → <span style="color:#16a34a;font-weight:600;">{corr_text}</span>'
                         f'<br><span style="font-size:0.82em;color:#6b7280;">{reason}</span>'
+                        f'{lp_html}'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
 
-    if total_entries > 10:
+    if total_entries >= 10:
         st.info(f"直近10件を表示中。全{total_entries}件のデータがあります。")
 
 
@@ -519,7 +579,6 @@ def recurrence_tab():
         st.info("添削データがありません。")
         return
 
-    # --- カテゴリ別集計 ---
     cat_journals: dict[str, set] = defaultdict(set)
     cat_counts: dict[str, int] = defaultdict(int)
     for c in all_corrections:
@@ -545,7 +604,6 @@ def recurrence_tab():
 
     cat_df = pd.DataFrame(cat_rows).sort_values("importance", ascending=False)
 
-    # --- 重要度マトリックス（散布図）---
     st.subheader("重要度マトリックス（再発率 × 重大性）")
     fig = px.scatter(
         cat_df,
@@ -570,12 +628,10 @@ def recurrence_tab():
         yaxis=dict(range=[0.5, 6]),
         legend_title_text="格付け",
     )
-    # 四象限ガイドライン
     fig.add_hline(y=3.5, line_dash="dot", line_color="gray", opacity=0.4)
     fig.add_vline(x=0.5, line_dash="dot", line_color="gray", opacity=0.4)
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 是正優先度ランキング表 ---
     st.subheader("是正優先度ランキング")
     display_df = cat_df[[
         "rating", "category_ja", "total_count", "journal_count", "recurrence_rate", "severity", "importance"
@@ -596,12 +652,11 @@ def recurrence_tab():
             "| B（要改善）| 1.5〜2.5 | 散発的だが改善余地あり |\n"
             "| C（軽微）  | 1.5未満  | 出現が少なく影響も限定的 |\n\n"
             "**重大性スコア**は英語試験評価基準を参考に設定:\n"
-            "文法(5) ＞ 時制(4) = 冠詞・前置詞(4) ＞ 語彙(3) ＞ その他(2)"
+            "主語・動詞の一致(5) = 時制・アスペクト(5) = 冠詞・前置詞(5) ＞ 語形(4) = 文の構造(4) ＞ 語彙・コロケーション(3) ＞ その他(2)"
         )
 
     st.divider()
 
-    # --- 同一ミス再発検出 ---
     st.subheader("同一表現の再発検出")
     st.caption("2件以上のジャーナルで同じ（または酷似した）表現が修正されたケースを抽出します")
 
@@ -644,7 +699,7 @@ def main():
         initial_sidebar_state="collapsed"
     )
 
-    # Streamlit Community Cloud のシークレットを os.environ にブリッジ（DB接続より前に実行）
+    # Streamlit Community Cloud のシークレットを os.environ にブリッジ（_supabase()より前に実行）
     try:
         for _k, _v in st.secrets.items():
             if _k not in os.environ:
@@ -655,20 +710,31 @@ def main():
     st.title("英語ジャーナル添削AI")
     st.caption("手書き英語ジャーナルのPDFをアップロードすると、文字起こし・文法添削・エラー分析を自動で行います")
 
-    public_url = get_public_url()
-    local_ip = get_local_ip()
+    is_cloud = bool(os.getenv("SUPABASE_URL"))
+    if is_cloud:
+        public_url = ""
+        local_ip = ""
+    else:
+        public_url = get_public_url()
+        local_ip = get_local_ip()
+
     with st.sidebar:
-        st.subheader("アクセスURL")
-        if public_url:
-            st.success(f"**どこからでもアクセス可能**\n\n{public_url}")
-            st.caption("インターネット経由（ngrok）")
-        if local_ip:
-            st.info(f"**同じWi-Fi内からのアクセス**\n\nhttp://{local_ip}:8501")
-            st.caption("LAN内のみ")
-        if not public_url and not local_ip:
-            st.warning("URLを取得できませんでした")
-        if not public_url:
-            st.caption("外部公開するには start.sh でアプリを起動してください")
+        if is_cloud:
+            st.subheader("デプロイ情報")
+            st.success("Streamlit Community Cloudで動作中")
+            st.caption("このページのURLをブックマークまたは共有してください")
+        else:
+            st.subheader("アクセスURL")
+            if public_url:
+                st.success(f"**どこからでもアクセス可能**\n\n{public_url}")
+                st.caption("インターネット経由（ngrok）")
+            if local_ip:
+                st.info(f"**同じWi-Fi内からのアクセス**\n\nhttp://{local_ip}:8501")
+                st.caption("LAN内のみ")
+            if not public_url and not local_ip:
+                st.warning("URLを取得できませんでした")
+            if not public_url:
+                st.caption("外部公開するには start.sh でアプリを起動してください")
 
     init_db()
 
