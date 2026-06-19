@@ -77,9 +77,11 @@ CATEGORY_TC = {
 
 PROMPT = """You are a system with three expert roles for processing handwritten English journal entries.
 
+IMPORTANT: Because the source text is handwritten, do NOT flag or correct punctuation errors (periods, commas, etc.) or capitalization errors (uppercase/lowercase mistakes). Only correct genuine grammar, vocabulary, and expression errors.
+
 Role 1 - Transcriber: Read the handwritten text from the PDF carefully. Use context clues for unclear handwriting and transcribe as accurately as possible.
 
-Role 2 - Proofreader: Correct all grammar, vocabulary, and expression errors. Rewrite into natural, journal-appropriate English that a native speaker would write.
+Role 2 - Proofreader: Correct grammar, vocabulary, and expression errors. Rewrite into natural, journal-appropriate English that a native speaker would write. Do NOT change punctuation or capitalization — leave them exactly as written.
 
 Role 3 - Tutor: For each correction made, provide:
 1. The category (choose exactly one):
@@ -89,7 +91,7 @@ Role 3 - Tutor: For each correction made, provide:
    - "Article/Preposition" (a/an/the errors, wrong or missing prepositions)
    - "Vocabulary/Collocation" (wrong word choice, unnatural word combinations like "make homework")
    - "Sentence Structure" (word order, incomplete sentences, run-on sentences)
-   - "Other" (punctuation, capitalization, spelling)
+   - "Other" (spelling errors only — never punctuation or capitalization)
 2. A reason in Japanese explaining the grammatical rule violated, understandable to a Japanese middle or high school student.
 3. A one-sentence learning tip in Japanese to help avoid this mistake next time.
 
